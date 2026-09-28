@@ -1,19 +1,85 @@
 {
-  "webhook_host": {
-    "description": "Webhook 监听地址",
+  "repositories": {
+    "description": "仓库通知配置",
+    "type": "template_list",
+    "default": [],
+    "hint": "通常只需填写仓库名和接收者 QQ 列表；默认私聊。需要群通知时选择 group 或 both，并填写群号。保存后重载插件。",
+    "templates": {
+      "repository": {
+        "name": "GitHub 仓库",
+        "display_item": "repository",
+        "items": {
+          "repository": {
+            "description": "仓库名（owner/repo）",
+            "type": "string",
+            "default": ""
+          },
+          "owners": {
+            "description": "接收通知的 QQ 号列表（code owners）",
+            "type": "list",
+            "default": [],
+            "hint": "每项填写一个 QQ 号；群聊时 @ 这些用户，私聊时分别发送。"
+          },
+          "mode": {
+            "description": "通知模式",
+            "type": "string",
+            "options": [
+              "group",
+              "private",
+              "both"
+            ],
+            "default": "private",
+            "hint": "group：仅群聊；private：仅私聊；both：群聊和私聊。"
+          },
+          "group_id": {
+            "description": "接收通知的群号",
+            "type": "string",
+            "default": "",
+            "hint": "仅私聊模式可留空。"
+          },
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "platform_id": {
+            "description": "平台 ID（通常保留默认值）",
+            "type": "string",
+            "default": "default",
+            "hint": "机器人页面配置的 ID，例如 default；请以实际配置为准。"
+          },
+          "bot_qq": {
+            "description": "机器人自身 QQ（可留空）",
+            "type": "string",
+            "default": "",
+            "hint": "同一适配器连接多个 QQ 时填写，用于指定发送账号。"
+          }
+        }
+      }
+    }
+  },
+  "webhook_public_url": {
+    "description": "公网 Webhook 地址（复制到 GitHub 的 Payload URL）",
     "type": "string",
-    "default": "0.0.0.0"
+    "default": "",
+    "hint": "可填写你准备使用的完整回调地址，例如 http://服务器IP:6196/github/webhook 或自己的 HTTPS 地址。用于绑定提示。"
+  },
+  "webhook_secret": {
+    "description": "Webhook Secret（自动生成，复制到 GitHub）",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "hint": "首次加载自动生成并保存；已有值会保留。点击显示后复制到 GitHub Webhook 的 Secret。清空后重载会重新生成。"
   },
   "webhook_port": {
     "description": "Webhook 监听端口（容器部署需映射）",
     "type": "int",
     "default": 6196
   },
-  "webhook_secret": {
-    "description": "GitHub Webhook Secret（必填，需与 GitHub 一致）",
+  "webhook_host": {
+    "description": "Webhook 监听地址",
     "type": "string",
-    "default": "",
-    "secret": true
+    "default": "0.0.0.0"
   },
   "notification_mode": {
     "description": "群聊绑定仓库的默认通知模式",
@@ -35,64 +101,5 @@
     "description": "未合并关闭后贴表情的 NapCat emoji ID（空为禁用）",
     "type": "string",
     "default": ""
-  },
-  "repositories": {
-    "description": "仓库通知配置",
-    "type": "template_list",
-    "default": [],
-    "hint": "添加仓库后保存并重载插件，无需聊天绑定。禁用或删除条目会停止该仓库监听。",
-    "templates": {
-      "repository": {
-        "name": "GitHub 仓库",
-        "display_item": "repository",
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "repository": {
-            "description": "仓库名（owner/repo）",
-            "type": "string",
-            "default": ""
-          },
-          "platform_id": {
-            "description": "AstrBot 平台 ID",
-            "type": "string",
-            "default": "default",
-            "hint": "机器人页面配置的 ID，例如 default；请以实际配置为准。"
-          },
-          "bot_qq": {
-            "description": "机器人自身 QQ（可留空）",
-            "type": "string",
-            "default": "",
-            "hint": "同一适配器连接多个 QQ 时填写，用于指定发送账号。"
-          },
-          "group_id": {
-            "description": "接收通知的群号",
-            "type": "string",
-            "default": "",
-            "hint": "仅私聊模式可留空。"
-          },
-          "owners": {
-            "description": "接收通知的 QQ 号列表（code owners）",
-            "type": "list",
-            "default": [],
-            "hint": "每项填写一个 QQ 号；群聊时 @ 这些用户，私聊时分别发送。"
-          },
-          "mode": {
-            "description": "通知模式",
-            "type": "string",
-            "options": [
-              "group",
-              "private",
-              "both"
-            ],
-            "default": "private",
-            "hint": "group：仅群聊；private：仅私聊；both：群聊和私聊。"
-          }
-        }
-      }
-    }
   }
 }

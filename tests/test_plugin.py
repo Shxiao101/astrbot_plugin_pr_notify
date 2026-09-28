@@ -80,6 +80,25 @@ class Bot:
 
 
 class PluginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_secret_is_generated_persisted_and_reused(self):
+        class SavedConfig(dict):
+            def save_config(self):
+                self.saved = dict(self)
+
+        await self.plugin.terminate()
+        config = SavedConfig(self.config)
+        config["webhook_secret"] = ""
+        self.plugin = self.module.PrNotify(self.context, config)
+        await self.plugin.initialize()
+        secret = config.saved["webhook_secret"]
+        self.assertGreaterEqual(len(secret), 32)
+        await self.plugin.terminate()
+        restored = SavedConfig(config.saved)
+        self.plugin = self.module.PrNotify(self.context, restored)
+        await self.plugin.initialize()
+        self.assertEqual(restored["webhook_secret"], secret)
+        self.assertFalse(hasattr(restored, "saved"))
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.bot = Bot()

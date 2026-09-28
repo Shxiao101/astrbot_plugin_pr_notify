@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
 import time
 
 from aiohttp import web
@@ -82,10 +83,11 @@ class PrNotify(Star):
             )
         self.store.sync_panel(entries)
         if not self.config["webhook_secret"]:
-            logger.warning(
-                "[pr-notify] Configure webhook_secret and reload; webhook listener is disabled"
+            self.config["webhook_secret"] = secrets.token_urlsafe(32)
+            self.config.save_config()
+            logger.info(
+                "[pr-notify] Generated webhook secret; copy it from the plugin settings"
             )
-            return
         app = web.Application(client_max_size=2 * 1024 * 1024)
         app.router.add_post("/github/webhook", self.webhook)
         runner = web.AppRunner(app, shutdown_timeout=10)
@@ -150,7 +152,7 @@ class PrNotify(Star):
             return (
                 "已进入仓库添加模式（5 分钟有效）。\n"
                 "GitHub Settings > Webhooks > Add webhook：\n"
-                "Payload URL: https://你的域名/github/webhook\n"
+                f"Payload URL: {self.config['webhook_public_url'] or 'https://你的域名/github/webhook'}\n"
                 f"反向代理至插件端口 {self.config['webhook_port']}\n"
                 "Content type: application/json\nSecret: 插件配置中的 webhook_secret\n"
                 "Events: Pull requests\n保存后自动用 ping 确认；已有 webhook 可 Redeliver ping。"

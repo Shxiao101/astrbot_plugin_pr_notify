@@ -8,7 +8,7 @@
 
 1. 在 AstrBot 插件管理页选择“通过链接安装”，填写 `https://github.com/Shxiao101/astrbot_plugin_pr_notify`。也可下载仓库 ZIP 后上传安装。
 2. 在 AstrBot 的 Python 环境安装 `requirements.txt` 中的依赖，然后重载插件。
-3. 在插件配置中填写 `webhook_secret`，再次重载。Secret 为空时不启动 Webhook，并在日志中提示。
+3. 插件首次加载会自动生成并保存 `webhook_secret`，在面板中点击显示并复制到 GitHub。已有 Secret 会保留，重载不会更换。
 4. 将公网 HTTPS 地址的 `/github/webhook` 反向代理到 AstrBot 主机的 `6196` 端口。Docker 需映射此端口；它与 AstrBot WebUI 端口不同。
 5. 在 AstrBot 配置中把操作人的 QQ 号设为机器人管理员。单纯的 QQ 群管理员身份不够。
 
@@ -22,6 +22,8 @@ location = /github/webhook {
 
 ## 使用
 
+最少操作：添加仓库名和接收者 QQ → 保存并重载 → 在 GitHub 添加 Webhook，填写回调地址并粘贴面板自动生成的 Secret。默认私聊；群通知需另填群号。
+
 ### 在插件面板配置（推荐）
 
 打开 **插件 → GitHub PR 通知 → 配置 → 仓库通知配置**，添加一条“GitHub 仓库”，填写：
@@ -32,7 +34,7 @@ location = /github/webhook {
 - 通知模式：`private`、`group` 或 `both`。群通知需要填写群号。
 - 机器人自身 QQ：通常留空；同一适配器连接多个 QQ 时指定发送账号。
 
-保存并重载插件后生效，不需要再执行 `/notify repo add` 或等待 ping。GitHub Webhook 仍需按下表设置，并在插件面板填写相同 Secret。
+保存并重载插件后生效，不需要再执行 `/notify repo add` 或等待 ping。GitHub Webhook 仍需按下表设置，Secret 从插件面板复制。
 
 面板管理的仓库以面板为准，聊天命令不会修改它。禁用或删除面板条目会移除该仓库监听及记录；其他通过聊天命令添加的仓库保留。修改机器人或目标群会清除旧消息关联，避免给错误账号的消息贴表情。
 
@@ -94,9 +96,10 @@ location = /github/webhook {
 
 | 配置 | 默认值 | 用途 |
 | --- | --- | --- |
+| `webhook_public_url` | 空 | 公网完整回调地址，可从面板复制；用于绑定提示，需先配置对应反向代理 |
 | `webhook_host` | `0.0.0.0` | HTTP 监听地址 |
 | `webhook_port` | `6196` | HTTP 监听端口 |
-| `webhook_secret` | 空 | 必填；验证 GitHub HMAC-SHA256 签名 |
+| `webhook_secret` | 自动生成 | 从面板复制到 GitHub；清空后重载会重新生成 |
 | `notification_mode` | `group` | 新绑定群仓库的初始模式；已有仓库用命令修改 |
 | `merged_reaction_emoji_id` | 空 | 合并后的 NapCat emoji ID；空表示禁用 |
 | `closed_reaction_emoji_id` | 空 | 未合并关闭后的 NapCat emoji ID；空表示禁用 |
