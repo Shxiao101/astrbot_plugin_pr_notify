@@ -3,6 +3,7 @@
 Owned by this plugin. AstrBot/QQ are faked; aiohttp and SQLite run for real.
 """
 
+import asyncio
 import hashlib
 import hmac
 import importlib
@@ -13,8 +14,9 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from aiocqhttp.exceptions import ActionFailed
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -74,9 +76,13 @@ class Bot:
 
     async def call_action(self, action, **kwargs):
         if self.fail_user is not None and kwargs.get("user_id") == self.fail_user:
-            raise RuntimeError("private delivery unavailable")
+            raise ActionFailed({"retcode": 100})
         self.calls.append((action, kwargs))
-        return {"message_id": len(self.calls)}
+        return (
+            {"result": 0}
+            if action == "set_msg_emoji_like"
+            else {"message_id": len(self.calls)}
+        )
 
 
 class PluginTests(unittest.IsolatedAsyncioTestCase):
@@ -107,7 +113,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             get_client=lambda: self.bot,
         )
         self.context = types.SimpleNamespace(
-            get_platform_inst=lambda name: platform if name == "qq-main" else None
+            register_web_api=lambda *args: None,
+            get_platform_inst=lambda name: platform if name == "qq-main" else None,
         )
         modules = {}
         for name in (
@@ -116,8 +123,15 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             "astrbot.api.event",
             "astrbot.api.message_components",
             "astrbot.api.star",
+            "astrbot.api.web",
         ):
             modules[name] = types.ModuleType(name)
+        modules["astrbot.api.web"].request = types.SimpleNamespace()
+        modules["astrbot.api.web"].json_response = lambda data: data
+        modules["astrbot.api.web"].error_response = lambda message: {
+            "status": "error",
+            "message": message,
+        }
         modules["astrbot.api"].AstrBotConfig = dict
         modules["astrbot.api"].logger = logging.getLogger("test.pr-notify")
         modules["astrbot.api.event"].AstrMessageEvent = Event
@@ -177,6 +191,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         }
         response = await self.http.post("/github/webhook", data=body, headers=headers)
         await response.read()
+        await asyncio.sleep(0.25)
         return response.status
 
     async def bind(self, group="100"):
@@ -253,8 +268,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.bind()
         await self.command("/notify mode org/repo both")
         self.bot.fail_user = 111
-        with self.assertLogs("test.pr-notify", level="ERROR"):
-            self.assertEqual(await self.post("pull_request", self.payload()), 503)
+        self.assertEqual(await self.post("pull_request", self.payload()), 200)
         self.assertEqual(len(self.bot.calls), 2)
         await self.plugin.terminate()
         self.plugin = self.module.PrNotify(self.context, self.config)
@@ -266,6 +280,10 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.http = TestClient(TestServer(app))
         await self.http.start_server()
         self.bot.fail_user = None
+        with self.plugin.store.db:
+            self.plugin.store.db.execute(
+                "UPDATE tasks SET next_at=0 WHERE status='pending'"
+            )
         self.assertEqual(await self.post("pull_request", self.payload()), 200)
         self.assertEqual(len(self.bot.calls), 3)
         self.assertEqual(await self.post("pull_request", self.payload()), 200)
@@ -339,6 +357,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.plugin.pull_request(
             "panel/repo", "panel-open", "opened", self.payload()["pull_request"]
         )
+        await asyncio.sleep(0.25)
         self.assertEqual(self.bot.calls[-1][1]["user_id"], 333)
         self.assertNotIn("self_id", self.bot.calls[-1][1])
         self.assertIn("面板", await self.command("/notify owner add panel/repo 444"))
@@ -373,6 +392,196 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "群号"):
             await self.plugin.initialize()
         self.assertEqual(self.plugin.store.get_repo("org/repo")["target"], "100")
+
+    async def test_inner_reaction_result_retries_and_deduplicates(self):
+        """Regression: NapCat's outer success must not hide an inner failure."""
+        await self.bind()
+        await self.post("pull_request", self.payload(), "open")
+        original = self.bot.call_action
+
+        async def failure(action, **kwargs):
+            if action == "set_msg_emoji_like":
+                return {"result": 65011, "errMsg": "secret test-secret"}
+            return await original(action, **kwargs)
+
+        with patch.object(self.bot, "call_action", failure):
+            await self.post("pull_request", self.payload("closed"), "close")
+            row = self.plugin.store.db.execute(
+                "SELECT * FROM tasks WHERE operation='reaction'"
+            ).fetchone()
+            self.assertEqual(row["status"], "pending")
+            self.assertFalse(
+                self.plugin.store.delivered("org/repo", "close", "group:100")
+            )
+            self.assertNotIn("test-secret", row["error"])
+            for expected in (2, 3, 4):
+                with self.plugin.store.db:
+                    self.plugin.store.db.execute(
+                        "UPDATE tasks SET next_at=0 WHERE id=?", (row["id"],)
+                    )
+                await asyncio.sleep(0.25)
+                row = self.plugin.store.task(row["id"])
+                self.assertEqual(row["attempts"], expected)
+            self.assertEqual(row["status"], "failed")
+        self.plugin.store.retry(row["id"])
+        with patch.object(
+            self.bot, "call_action", AsyncMock(return_value={"result": 65002})
+        ):
+            await asyncio.sleep(0.25)
+        self.assertTrue(self.plugin.store.delivered("org/repo", "close", "group:100"))
+        count = len(self.bot.calls)
+        await self.post("pull_request", self.payload("closed"), "close")
+        self.assertEqual(len(self.bot.calls), count)
+
+    async def test_webhook_ack_and_close_wait_for_pending_open(self):
+        """HTTP acceptance does not wait for QQ; a reaction uses the accepted open."""
+        await self.bind()
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.bot.call_action
+
+        async def slow(action, **kwargs):
+            if action == "send_group_msg":
+                entered.set()
+                await release.wait()
+            return await original(action, **kwargs)
+
+        with patch.object(self.bot, "call_action", slow):
+            self.assertEqual(
+                await self.post("pull_request", self.payload(), "open"), 200
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            self.assertEqual(
+                await self.post("pull_request", self.payload("closed"), "close"), 200
+            )
+            self.assertEqual(self.bot.calls, [])
+            release.set()
+            await asyncio.sleep(0.5)
+        self.assertEqual(
+            [a for a, _ in self.bot.calls], ["send_group_msg", "set_msg_emoji_like"]
+        )
+        self.assertEqual(self.bot.calls[1][1]["message_id"], 1)
+
+    async def test_timeout_is_unknown_and_manual_retry_only(self):
+        """Messages with a missing acknowledgement are not automatically duplicated."""
+        await self.bind()
+        with patch.object(self.bot, "call_action", AsyncMock(side_effect=TimeoutError)):
+            await self.post("pull_request", self.payload(), "timeout")
+        row = self.plugin.store.db.execute(
+            "SELECT * FROM tasks WHERE delivery='timeout'"
+        ).fetchone()
+        self.assertEqual(row["status"], "unknown")
+        await self.post("pull_request", self.payload(), "timeout")
+        self.assertEqual(self.bot.calls, [])
+        self.plugin.store.retry(row["id"])
+        await asyncio.sleep(0.25)
+        self.assertEqual(self.plugin.store.task(row["id"])["status"], "success")
+
+    async def test_restart_recovery_preserves_legacy_and_unknown(self):
+        """An old SQLite database remains usable; interrupted messages stay unknown."""
+        await self.bind()
+        self.plugin.store.remember(
+            "org/repo", "legacy", "group:100", (6, "group", "100", "456")
+        )
+        await self.plugin.dispatcher.stop()
+        await self.plugin.pull_request(
+            "org/repo", "interrupted", "opened", self.payload()["pull_request"]
+        )
+        task = self.plugin.store.claim()
+        self.assertIsNotNone(task)
+        self.plugin.store.recover()
+        self.assertEqual(self.plugin.store.task(task["id"])["status"], "unknown")
+        self.assertTrue(self.plugin.store.delivered("org/repo", "legacy", "group:100"))
+        self.assertEqual(
+            self.plugin.store.messages("org/repo", 6)[0]["message_id"], "456"
+        )
+
+    async def test_changed_recipients_cancel_queued_tasks(self):
+        """Removing a QQ cancels both their DM and a queued group mention."""
+        await self.bind()
+        await self.command("/notify mode org/repo both")
+        await self.plugin.dispatcher.stop()
+        await self.plugin.pull_request(
+            "org/repo", "stale", "opened", self.payload()["pull_request"]
+        )
+        await self.command("/notify owner remove org/repo 111")
+        tasks = self.plugin.store.db.execute(
+            "SELECT * FROM tasks WHERE delivery='stale'"
+        ).fetchall()
+        self.assertEqual(
+            {(t["kind"], t["target"]): t["status"] for t in tasks},
+            {
+                ("group", "100"): "cancelled",
+                ("private", "111"): "cancelled",
+                ("private", "222"): "pending",
+            },
+        )
+        await self.command("/notify repo remove org/repo")
+        self.assertTrue(
+            all(
+                t["status"] == "cancelled"
+                for t in self.plugin.store.db.execute(
+                    "SELECT * FROM tasks WHERE delivery='stale'"
+                )
+            )
+        )
+
+    async def test_dashboard_uses_configured_targets_and_safe_status(self):
+        """Authenticated page handlers expose metadata, never payloads or credentials."""
+        await self.bind()
+        dashboard_module = sys.modules[self.plugin.dashboard.__class__.__module__]
+        fake_request = types.SimpleNamespace(
+            json=AsyncMock(return_value={"repository": "org/repo", "kind": "group"})
+        )
+        with patch.object(dashboard_module, "request", fake_request):
+            result = await self.plugin.dashboard.test()
+            self.assertEqual(len(result["task_ids"]), 5)
+            await asyncio.sleep(0.5)
+            fake_request.json.return_value = {
+                "repository": "org/repo",
+                "kind": "private",
+                "target": "987",
+            }
+            self.assertEqual((await self.plugin.dashboard.test())["status"], "error")
+            fake_request.json.return_value = {"repository": "org/repo"}
+            with patch.object(
+                self.bot,
+                "call_action",
+                AsyncMock(return_value={"online": True, "good": True}),
+            ):
+                self.assertTrue((await self.plugin.dashboard.check())["connected"])
+        status = await self.plugin.dashboard.status()
+        encoded = json.dumps(status)
+        self.assertNotIn("test-secret", encoded)
+        self.assertNotIn("content", encoded)
+        self.assertEqual(self.plugin.store.messages("org/repo", 0), [])
+        self.assertEqual(
+            len([a for a, _ in self.bot.calls if a == "set_msg_emoji_like"]), 2
+        )
+
+    async def test_worker_concurrency_is_bounded(self):
+        """At most four independent QQ destinations are in flight."""
+        await self.bind()
+        await self.command("/notify mode org/repo private")
+        await self.command("/notify owner add org/repo 333 444 555")
+        release = asyncio.Event()
+        active = peak = 0
+        original = self.bot.call_action
+
+        async def slow(action, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await release.wait()
+            active -= 1
+            return await original(action, **kwargs)
+
+        with patch.object(self.bot, "call_action", slow):
+            await self.post("pull_request", self.payload())
+            self.assertEqual(active, 4)
+            release.set()
+            await asyncio.sleep(0.5)
+        self.assertEqual(peak, 4)
+        self.assertEqual(len(self.bot.calls), 5)
 
 
 if __name__ == "__main__":

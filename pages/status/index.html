@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>通知状态</title><link rel="stylesheet" href="./style.css"></head>
+<body><main>
+<header><div><span class="eyebrow">GITHUB PR · v1.3.0</span><h1>通知状态</h1></div><button id="refresh">刷新状态</button></header>
+<p class="intro">查看当前生效配置与实际送达结果。仓库、QQ 和通知模式仍在插件配置中修改，保存后重载生效。</p>
+<p id="notice" role="status" aria-live="polite">正在连接 AstrBot…</p>
+<div id="repos"></div>
+<footer>失败自动重试 3 次，间隔 5 / 30 / 120 秒。结果未知的消息需人工重试，可能重复送达。待处理通知会按同一 PR 的顺序执行。</footer>
+</main><script type="module" src="./app.js"></script></body></html>

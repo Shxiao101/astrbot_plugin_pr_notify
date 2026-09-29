@@ -4,6 +4,7 @@ import hmac
 import json
 import re
 import secrets
+import sqlite3
 import time
 
 from aiohttp import web
@@ -12,6 +13,8 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import At, Plain
 from astrbot.api.star import Context, Star, StarTools
 
+from .dashboard import Dashboard
+from .delivery import Dispatcher
 from .store import Store
 
 MODES = {"group", "private", "both"}
@@ -40,8 +43,9 @@ class PrNotify(Star):
         )
         self.pending = None
         self.runner = None
-        # Serializes webhook redeliveries and route mutations across network awaits.
         self.lock = asyncio.Lock()
+        self.dispatcher = Dispatcher(self)
+        self.dashboard = Dashboard(self)
 
     async def initialize(self):
         entries = []
@@ -100,6 +104,8 @@ class PrNotify(Star):
             await runner.cleanup()
             raise
         self.runner = runner
+        self.dashboard.register()
+        self.dispatcher.start()
         logger.info(
             f"[pr-notify] Listening on port {self.config['webhook_port']}, path /github/webhook"
         )
@@ -127,6 +133,7 @@ class PrNotify(Star):
         )
         async with self.lock:
             result = self.command(args, event, route)
+            self.store.cancel_stale()
         yield event.plain_result(result)
 
     def command(self, args, event, route):
@@ -222,17 +229,6 @@ class PrNotify(Star):
             raise RuntimeError(f"OneBot 平台不可用：{repo['platform']}")
         return platform.get_client()
 
-    async def send(self, repo, kind, target, segments):
-        action = "send_group_msg" if kind == "group" else "send_private_msg"
-        key = "group_id" if kind == "group" else "user_id"
-        result = await self.client(repo).call_action(
-            action,
-            **{key: int(target)},
-            message=segments,
-            **({"self_id": repo["self_id"]} if repo["self_id"] else {}),
-        )
-        return str(result["message_id"])
-
     async def webhook(self, request):
         body = await request.read()
         secret = self.config["webhook_secret"]
@@ -247,17 +243,21 @@ class PrNotify(Star):
             if not isinstance(payload, dict):
                 raise TypeError("payload must be an object")
             event = request.headers.get("X-GitHub-Event", "")
-            if event not in ("ping", "pull_request"):
-                return web.json_response({"status": "ignored"})
             name = payload["repository"]["full_name"]
             if not isinstance(name, str) or not re.fullmatch(
                 r"[\w.-]+/[\w.-]+", name, re.ASCII
             ):
                 raise ValueError("invalid repository")
             name = name.lower()
+            if event not in ("ping", "pull_request"):
+                with self.store.db:
+                    self.store.received(name, event)
+                return web.json_response({"status": "ignored"})
             if event == "pull_request":
                 action = payload["action"]
                 if action not in ("opened", "reopened", "closed"):
+                    with self.store.db:
+                        self.store.received(name, "pull_request.ignored")
                     return web.json_response({"status": "ignored"})
                 pr = payload["pull_request"]
                 if type(pr["number"]) is not int or pr["number"] <= 0:
@@ -275,13 +275,19 @@ class PrNotify(Star):
                 raise ValueError("missing delivery ID")
         except (ValueError, KeyError, TypeError):
             raise web.HTTPBadRequest(text="invalid GitHub payload") from None
+        except sqlite3.Error:
+            raise web.HTTPServiceUnavailable(text="storage unavailable") from None
         async with self.lock:
             try:
                 if event == "ping":
                     await self.ping(name)
                 else:
                     await self.pull_request(name, delivery, action, pr)
-            except Exception:
+                with self.store.db:
+                    self.store.received(
+                        name, event if event == "ping" else f"pull_request.{action}"
+                    )
+            except Exception:  # noqa: BLE001 -- HTTP boundary must report durable acceptance failure
                 logger.exception(
                     f"[pr-notify] Webhook failed: {name}, delivery={delivery}"
                 )
@@ -310,102 +316,109 @@ class PrNotify(Star):
             )
             self.store.add_repo(name, pending["route"], mode)
             repo = self.store.get_repo(name)
-        await self.send(
-            repo,
-            repo["kind"],
-            repo["target"],
-            [
-                {
-                    "type": "text",
-                    "data": {
-                        "text": f"Webhook 连接成功！\n仓库：{name}\n通知模式：{repo['mode']}\n请使用 /notify owner add {name} @用户或QQ号 添加 code owners。"
-                    },
-                }
-            ],
-        )
+        with self.store.db:
+            self.store.enqueue(
+                repo,
+                f"ping-{secrets.token_hex(8)}",
+                0,
+                repo["kind"],
+                repo["target"],
+                "ping",
+                [
+                    {
+                        "type": "text",
+                        "data": {
+                            "text": f"Webhook 连接成功！\n仓库：{name}\n请配置通知负责人 QQ。"
+                        },
+                    }
+                ],
+            )
         self.pending = None
+
+    def targets(self, repo):
+        targets = []
+        if repo["mode"] in ("group", "both"):
+            targets.append(("group", repo["target"]))
+        if repo["mode"] in ("private", "both"):
+            targets.extend(("private", qq) for qq in self.store.owners(repo["name"]))
+        return targets
+
+    def segments(self, repo, kind, text):
+        segments = []
+        if kind == "group":
+            for qq in self.store.owners(repo["name"]):
+                segments.extend(
+                    [
+                        {"type": "at", "data": {"qq": qq}},
+                        {"type": "text", "data": {"text": " "}},
+                    ]
+                )
+        segments.append({"type": "text", "data": {"text": text}})
+        return segments
 
     async def pull_request(self, name, delivery, action, pr):
         repo = self.store.get_repo(name)
         if repo is None:
             return
-        failed = False
-        if action == "closed":
-            emoji = self.config[
-                "merged_reaction_emoji_id"
-                if pr["merged"]
-                else "closed_reaction_emoji_id"
-            ]
-            if not emoji:
-                return
-            for message in self.store.messages(name, pr["number"]):
-                if message["kind"] != "group":
-                    continue
-                destination = f"{message['kind']}:{message['target']}"
-                if self.store.delivered(name, delivery, destination):
-                    continue
-                try:
-                    await self.client(repo).call_action(
-                        "set_msg_emoji_like",
-                        message_id=int(message["message_id"]),
-                        emoji_id=emoji,
-                        set=True,
-                        **({"self_id": repo["self_id"]} if repo["self_id"] else {}),
-                    )
-                    self.store.remember(name, delivery, destination)
-                except Exception:
-                    failed = True
-                    logger.exception(
-                        f"[pr-notify] Reaction failed: {name} {destination}"
-                    )
-        else:
-            owners = self.store.owners(name)
-            if not owners:
-                return
-            text = f"[PR #{pr['number']}] {name}\n{pr['title']}\n作者：{pr['user']['login']}\n{pr['html_url']}"
-            targets = []
-            if repo["mode"] in ("group", "both"):
-                targets.append(("group", repo["target"]))
-            if repo["mode"] in ("private", "both"):
-                targets.extend(("private", qq) for qq in owners)
-            for kind, target in targets:
-                destination = f"{kind}:{target}"
-                if self.store.delivered(name, delivery, destination):
-                    continue
-                segments = []
-                if kind == "group":
-                    for qq in owners:
-                        segments.extend(
-                            [
-                                {"type": "at", "data": {"qq": qq}},
-                                {"type": "text", "data": {"text": " "}},
-                            ]
-                        )
-                segments.append(
-                    {
-                        "type": "text",
-                        "data": {"text": "\n" + text if kind == "group" else text},
-                    }
+        with self.store.db:
+            if action == "closed":
+                emoji = self.config[
+                    "merged_reaction_emoji_id"
+                    if pr["merged"]
+                    else "closed_reaction_emoji_id"
+                ]
+                if not emoji or repo["mode"] not in ("group", "both"):
+                    return
+                # Capture the latest open task at receipt, not a later reopened notification.
+                parent = self.store.db.execute(
+                    """SELECT id FROM tasks WHERE repo=? AND number=?
+                    AND kind='group' AND target=? AND operation='message' AND test=0
+                    AND status!='cancelled' ORDER BY id DESC LIMIT 1""",
+                    (name, pr["number"], repo["target"]),
+                ).fetchone()
+                old = next(
+                    (
+                        m
+                        for m in self.store.messages(name, pr["number"])
+                        if m["kind"] == "group" and m["target"] == repo["target"]
+                    ),
+                    None,
                 )
-                try:
-                    message_id = await self.send(repo, kind, target, segments)
-                    self.store.remember(
-                        name,
+                if (
+                    parent
+                    and self.store.task(parent[0])["status"] == "success"
+                    and old is None
+                ):
+                    parent = None
+                if parent is not None or old is not None:
+                    self.store.enqueue(
+                        repo,
                         delivery,
-                        destination,
-                        (pr["number"], kind, target, message_id)
-                        if kind == "group"
-                        else None,
+                        pr["number"],
+                        "group",
+                        repo["target"],
+                        "reaction",
+                        emoji,
+                        parent=parent[0] if parent else None,
+                        message_id=old["message_id"] if old else None,
                     )
-                except Exception:
-                    failed = True
-                    logger.exception(f"[pr-notify] Send failed: {name} {destination}")
-        if failed:
-            raise RuntimeError("部分通知发送失败")
+            elif self.store.owners(name):
+                text = f"[PR #{pr['number']}] {name}\n{pr['title']}\n作者：{pr['user']['login']}\n{pr['html_url']}"
+                for kind, target in self.targets(repo):
+                    self.store.enqueue(
+                        repo,
+                        delivery,
+                        pr["number"],
+                        kind,
+                        target,
+                        "message",
+                        self.segments(repo, kind, text),
+                    )
 
     async def terminate(self):
         if self.runner is not None:
             await self.runner.cleanup()
             self.runner = None
+        await self.dispatcher.stop()
         self.pending = None
         self.store.close()

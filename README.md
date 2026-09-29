@@ -4,7 +4,7 @@
 
 ## 安装
 
-需要 AstrBot 4.16+（4.x）及 OneBot v11 / NapCat。表情回应使用 NapCat 的 `set_msg_emoji_like` 扩展；其他 OneBot 实现需要支持该接口。
+需要 AstrBot 4.28.1+（4.x）及 OneBot v11 / NapCat。表情回应使用 NapCat 的 `set_msg_emoji_like` 扩展；其他 OneBot 实现需要支持该接口。
 
 1. 在 AstrBot 插件管理页选择“通过链接安装”，填写 `https://github.com/Shxiao101/astrbot_plugin_pr_notify`。也可下载仓库 ZIP 后上传安装。
 2. 在 AstrBot 的 Python 环境安装 `requirements.txt` 中的依赖，然后重载插件。
@@ -108,7 +108,23 @@ location = /github/webhook {
 
 SQLite 状态保存在 `data/plugin_data/astrbot_plugin_pr_notify/notify.sqlite`，重载/重启后保留仓库、owners、原消息 ID 和已成功投递记录。等待 ping 的绑定状态在重启后失效。移除仓库会一并删除这些记录。
 
-Webhook 仅处理 `ping` 及 `pull_request` 的 `opened`、`reopened`、`closed`，其他事件忽略。失败返回 HTTP 503 并记录日志；请在 GitHub Recent Deliveries 中 **Redeliver**。同一 delivery ID 已成功发送的目标会跳过，仅重试失败目标。若协议端已发送但响应丢失，或发送后落库前进程退出，仍可能重复，不能保证严格只发送一次。
+### 通知状态页（v1.3.0）
+
+打开 **插件 → GitHub PR 通知 → 插件页面 → 通知状态**。仓库配置继续使用原配置面板；此页显示当前生效配置、最近一次通过签名校验的 GitHub 请求、每个目标的发送结果、耗时及重试时间。
+
+- **检查配置**：检查本地配置、监听服务和机器人连接，不发送消息，也不代表公网可达。首次升级后，需要收到新的真实 GitHub 请求，才会显示 GitHub 已连通。
+- **测试群聊与表情**：向配置群发送带 `[测试]` 标记的消息；如果配置了合并/关闭表情，各用一条测试消息验证。**测试私聊**：给配置接收者分别发送测试消息。测试不会写入真实 PR 的消息关联。
+- **重试失败项**：仅重试所选失败目标。对于“结果未知”，页面会提醒可能重复送达，再由管理员决定是否重试。
+
+Webhook 处理 `ping` 及 `pull_request` 的 `opened`、`reopened`、`closed`。任务持久化成功后立即返回 HTTP 200，此时代表**已接收**；QQ 是否送达以状态页为准。落库失败返回 HTTP 503，可在 GitHub Recent Deliveries 中 Redeliver。同一 delivery ID 已成功发送的目标会跳过。
+
+后台最多并发 4 个目标，同仓库、同 PR、同目标按接收顺序处理。单次调用最多 15 秒；明确失败后分别等待 5、30、120 秒，总计最多尝试 4 次。自动重试次数耗尽后保留失败状态。前序任务失败或结果未知时，同一 PR 同一目标的后续通知等待管理员处理。
+
+普通消息超时、连接异常或发送中进程退出时，标记“结果未知”，不会自动重发；人工重试仍可能产生重复消息。贴表情操作可安全重试；NapCat 内部返回失败不会记为成功，明确的“已经设置过该表情”视为完成。
+
+重载恢复待处理任务。禁用仓库、切换目标/机器人、移除接收者时取消受影响的未完成任务；已经发给 QQ 的请求不能撤销。诊断信息保留 30 天，未解决任务及其必要依赖继续保留以支持人工处理；历史成功去重记录与原消息 ID 沿用原有生命周期。
+
+状态页使用 AstrBot Dashboard 认证，不新增公网管理端口，也不展示 Secret、认证信息及原始 Webhook payload。当前版本保持原有 PR 事件范围；私聊不贴表情，也不发送关闭/合并通知。
 
 ## 验证
 

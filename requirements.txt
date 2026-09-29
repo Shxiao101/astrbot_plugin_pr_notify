@@ -1,1 +1,2 @@
 aiohttp>=3.9,<4
+aiocqhttp>=1.4,<2
