@@ -93,12 +93,12 @@
     "hint": "private 向各 code owner 私聊；both 同时群聊和私聊。可用 /notify mode 为仓库单独设置。"
   },
   "merged_reaction_emoji_id": {
-    "description": "合并后贴表情的 NapCat emoji ID（空为禁用）",
+    "description": "合并后群消息贴表情的 NapCat emoji ID（空为禁用）",
     "type": "string",
     "default": ""
   },
   "closed_reaction_emoji_id": {
-    "description": "未合并关闭后贴表情的 NapCat emoji ID（空为禁用）",
+    "description": "未合并关闭后群消息贴表情的 NapCat emoji ID（空为禁用）",
     "type": "string",
     "default": ""
   }

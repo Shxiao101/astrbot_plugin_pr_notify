@@ -104,7 +104,7 @@ location = /github/webhook {
 | `merged_reaction_emoji_id` | 空 | 合并后的 NapCat emoji ID；空表示禁用 |
 | `closed_reaction_emoji_id` | 空 | 未合并关闭后的 NapCat emoji ID；空表示禁用 |
 
-配置修改后重载插件。表情 ID 使用 NapCat 接受的 ID，而非直接输入 emoji 字符。群通知与私聊通知都记录消息 ID，关闭/合并时在对应原消息上贴表情，不另发关闭通知；私聊贴表情是否成功取决于协议端支持。重开会发新通知，下次关闭关联最新通知。
+配置修改后重载插件。表情 ID 使用 NapCat 接受的 ID，而非直接输入 emoji 字符。关闭/合并时仅对群聊原通知贴表情；私聊只发送 PR 新建/重开通知。重开会发新通知，下次关闭关联最新群通知。
 
 SQLite 状态保存在 `data/plugin_data/astrbot_plugin_pr_notify/notify.sqlite`，重载/重启后保留仓库、owners、原消息 ID 和已成功投递记录。等待 ping 的绑定状态在重启后失效。移除仓库会一并删除这些记录。
 

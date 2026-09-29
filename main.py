@@ -339,6 +339,8 @@ class PrNotify(Star):
             if not emoji:
                 return
             for message in self.store.messages(name, pr["number"]):
+                if message["kind"] != "group":
+                    continue
                 destination = f"{message['kind']}:{message['target']}"
                 if self.store.delivered(name, delivery, destination):
                     continue
@@ -391,7 +393,9 @@ class PrNotify(Star):
                         name,
                         delivery,
                         destination,
-                        (pr["number"], kind, target, message_id),
+                        (pr["number"], kind, target, message_id)
+                        if kind == "group"
+                        else None,
                     )
                 except Exception:
                     failed = True

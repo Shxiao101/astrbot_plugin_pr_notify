@@ -275,7 +275,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [p["emoji_id"] for a, p in self.bot.calls if a == "set_msg_emoji_like"],
-            ["76"] * 3,
+            ["76"],
         )
 
     async def test_reopen_reacts_to_new_message_and_remove_cleans_state(self):
@@ -301,6 +301,20 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             "仅支持 private", await self.command("/notify mode org/repo both", group="")
         )
         await self.post("pull_request", self.payload())
+        self.assertEqual([a for a, _ in self.bot.calls], ["send_private_msg"] * 2)
+        # Older versions persisted private messages; they must also be skipped.
+        self.plugin.store.remember(
+            "org/repo", "legacy-private", "private:111", (7, "private", "111", "99")
+        )
+        for merged in (False, True):
+            self.assertEqual(
+                await self.post(
+                    "pull_request",
+                    self.payload("closed", merged),
+                    f"private-close-{merged}",
+                ),
+                200,
+            )
         self.assertEqual([a for a, _ in self.bot.calls], ["send_private_msg"] * 2)
         await self.command("/notify owner remove org/repo 111 222", group="")
         self.bot.calls.clear()
