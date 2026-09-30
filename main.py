@@ -43,6 +43,7 @@ class PrNotify(Star):
         )
         self.pending = None
         self.runner = None
+        self.repository_secrets = {}
         self.lock = asyncio.Lock()
         self.dispatcher = Dispatcher(self)
         self.dashboard = Dashboard(self)
@@ -50,6 +51,7 @@ class PrNotify(Star):
     async def initialize(self):
         entries = []
         names = set()
+        repository_secrets = {}
         for item in self.config["repositories"]:
             if not item["enabled"]:
                 continue
@@ -71,6 +73,11 @@ class PrNotify(Star):
                 raise ValueError(f"{name}：机器人 QQ 和群号须为数字")
             if mode in ("group", "both") and not group:
                 raise ValueError(f"{name}：群通知需要填写群号")
+            secret = item.get("webhook_secret", "")
+            if not isinstance(secret, str):
+                raise TypeError(f"{name}：Webhook Secret 必须为字符串")
+            if secret:
+                repository_secrets[name] = secret
             names.add(name)
             entries.append(
                 {
@@ -86,6 +93,7 @@ class PrNotify(Star):
                 }
             )
         self.store.sync_panel(entries)
+        self.repository_secrets = repository_secrets
         if not self.config["webhook_secret"]:
             self.config["webhook_secret"] = secrets.token_urlsafe(32)
             self.config.save_config()
@@ -231,7 +239,20 @@ class PrNotify(Star):
 
     async def webhook(self, request):
         body = await request.read()
-        secret = self.config["webhook_secret"]
+        try:
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise TypeError("payload must be an object")
+            name = payload["repository"]["full_name"]
+            if not isinstance(name, str) or not re.fullmatch(
+                r"[\w.-]+/[\w.-]+", name, re.ASCII
+            ):
+                raise ValueError("invalid repository")
+            name = name.lower()
+        except (ValueError, KeyError, TypeError):
+            raise web.HTTPBadRequest(text="invalid GitHub payload") from None
+        # The repository only selects a key; trust the payload after verifying all bytes.
+        secret = self.repository_secrets.get(name, self.config["webhook_secret"])
         expected = (
             "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         )
@@ -239,16 +260,7 @@ class PrNotify(Star):
         if not secret or not hmac.compare_digest(signature.encode(), expected.encode()):
             raise web.HTTPUnauthorized(text="invalid signature")
         try:
-            payload = json.loads(body)
-            if not isinstance(payload, dict):
-                raise TypeError("payload must be an object")
             event = request.headers.get("X-GitHub-Event", "")
-            name = payload["repository"]["full_name"]
-            if not isinstance(name, str) or not re.fullmatch(
-                r"[\w.-]+/[\w.-]+", name, re.ASCII
-            ):
-                raise ValueError("invalid repository")
-            name = name.lower()
             if event not in ("ping", "pull_request"):
                 with self.store.db:
                     self.store.received(name, event)

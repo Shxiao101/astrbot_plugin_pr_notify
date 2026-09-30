@@ -25,6 +25,7 @@ https://github.com/Shxiao101/astrbot_plugin_pr_notify
 | 项目 | 填写说明 |
 | --- | --- |
 | 仓库名 | `owner/repo` |
+| 仓库 Webhook Secret | 可填写独立密钥；留空沿用全局密钥 |
 | 平台 ID | AstrBot 机器人页面中的平台 ID，例如 `default` |
 | 接收者 QQ | 每项一个 QQ 号；群聊时 @ 这些成员，私聊时分别发送 |
 | 通知模式 | `private` 私聊、`group` 群聊、`both` 同时通知 |
@@ -45,8 +46,10 @@ https://github.com/Shxiao101/astrbot_plugin_pr_notify
 | --- | --- |
 | Payload URL | 公网回调地址，例如 `https://你的域名/github/webhook` |
 | Content type | `application/json` |
-| Secret | 从插件配置复制自动生成的 `webhook_secret` |
+| Secret | 复制该仓库的独立密钥；未填写时复制自动生成的全局密钥 |
 | Events | 选择 **Let me select individual events → Pull requests** |
+
+多个仓库可以共用回调地址，各自使用不同密钥。修改仓库密钥后，需要同步修改 GitHub Webhook 的 Secret，并重载插件。
 
 ## 检查与测试
 

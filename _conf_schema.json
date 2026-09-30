@@ -14,6 +14,13 @@
             "type": "string",
             "default": ""
           },
+          "webhook_secret": {
+            "description": "该仓库的 Webhook Secret（可选）",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "hint": "填写独立密钥，并复制到该仓库 GitHub Webhook 的 Secret。留空沿用下方全局密钥；填写后只接受本仓库密钥。保存后重载插件。"
+          },
           "owners": {
             "description": "接收通知的 QQ 号列表（code owners）",
             "type": "list",
@@ -65,11 +72,11 @@
     "hint": "可填写你准备使用的完整回调地址，例如 http://服务器IP:6196/github/webhook 或自己的 HTTPS 地址。用于绑定提示。"
   },
   "webhook_secret": {
-    "description": "Webhook Secret（自动生成，复制到 GitHub）",
+    "description": "全局 Webhook Secret（未配置仓库独立密钥时使用）",
     "type": "string",
     "default": "",
     "secret": true,
-    "hint": "首次加载自动生成并保存；已有值会保留。点击显示后复制到 GitHub Webhook 的 Secret。清空后重载会重新生成。"
+    "hint": "首次加载自动生成并保存；已有值会保留。仓库独立密钥留空或通过聊天命令绑定时使用此密钥。清空后重载会重新生成。"
   },
   "webhook_port": {
     "description": "Webhook 监听端口（容器部署需映射）",

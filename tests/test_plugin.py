@@ -181,13 +181,20 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def command(self, text, **kwargs):
         return "\n".join([r async for r in self.plugin.notify(Event(text, **kwargs))])
 
-    async def post(self, event, payload, delivery="delivery-1", signature=None):
+    async def post(
+        self,
+        event,
+        payload,
+        delivery="delivery-1",
+        signature=None,
+        secret="test-secret",
+    ):
         body = json.dumps(payload).encode()
         headers = {
             "X-GitHub-Event": event,
             "X-GitHub-Delivery": delivery,
             "X-Hub-Signature-256": signature
-            or "sha256=" + hmac.new(b"test-secret", body, hashlib.sha256).hexdigest(),
+            or "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest(),
         }
         response = await self.http.post("/github/webhook", data=body, headers=headers)
         await response.read()
@@ -224,6 +231,66 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self.command("/notify repo list"), "当前会话未监听任何仓库"
         )
+
+    async def test_repository_secrets_isolate_signatures_and_survive_reload(self):
+        """Long-lived HTTP contract: dedicated keys cannot authorize other repositories."""
+        await self.bind()
+        self.config["repositories"] = [
+            {
+                "enabled": True,
+                "repository": name,
+                "platform_id": "qq-main",
+                "bot_qq": "",
+                "group_id": "",
+                "mode": "private",
+                "owners": ["333"],
+                **fields,
+            }
+            for name, fields in [
+                ("Panel/First", {"webhook_secret": "first-key"}),
+                ("panel/second", {"webhook_secret": "second-key"}),
+                ("panel/legacy", {}),
+            ]
+        ]
+        await self.http.close()
+        for _ in range(2):
+            await self.plugin.terminate()
+            self.plugin = self.module.PrNotify(self.context, self.config)
+            await self.plugin.initialize()
+        app = web.Application()
+        app.router.add_post("/github/webhook", self.plugin.webhook)
+        self.http = TestClient(TestServer(app))
+        await self.http.start_server()
+
+        for name, key in [
+            ("PANEL/FIRST", "first-key"),
+            ("panel/second", "second-key"),
+            ("panel/legacy", "test-secret"),
+            ("org/repo", "test-secret"),
+        ]:
+            payload = self.payload()
+            payload["repository"]["full_name"] = name
+            for candidate in ("first-key", "second-key", "test-secret"):
+                with self.subTest(repository=name, key=candidate):
+                    self.assertEqual(
+                        await self.post(
+                            "pull_request",
+                            payload,
+                            f"{name}-{candidate}",
+                            secret=candidate,
+                        ),
+                        200 if candidate == key else 401,
+                    )
+        status = await self.plugin.dashboard.status()
+        encoded = json.dumps(status)
+        for key in ("first-key", "second-key", "test-secret"):
+            self.assertNotIn(key, encoded)
+        self.assertEqual(len(self.bot.calls), 4)
+        before = encoded
+        payload = self.payload()
+        payload["repository"]["full_name"] = "panel/second"
+        self.assertEqual(await self.post("ping", payload, secret="first-key"), 401)
+        self.assertEqual(json.dumps(await self.plugin.dashboard.status()), before)
 
     async def test_binding_scope_timeout_and_permissions(self):
         self.assertIn(
